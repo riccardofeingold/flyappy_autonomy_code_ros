@@ -5,6 +5,8 @@
 #include <geometry_msgs/Vector3.h>
 #include <sensor_msgs/LaserScan.h>
 #include <std_msgs/Bool.h>
+#include <nav_msgs/OccupancyGrid.h>
+#include <nav_msgs/MapMetaData.h>
 
 #include "flyappy_autonomy_code/flyappy.hpp"
 
@@ -17,8 +19,11 @@ class FlyappyRos
     void velocityCallback(const geometry_msgs::Vector3::ConstPtr& msg);
     void laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg);
     void gameEndedCallback(const std_msgs::Bool::ConstPtr& msg);
+    void updateLaserData(const sensor_msgs::LaserScan::ConstPtr& msg);
+    void updateMapData();
 
     ros::Publisher pub_acc_cmd_;      ///< Publisher for acceleration command
+    ros::Publisher pub_map_;          ///< Publisher for occupancy grid
     ros::Subscriber sub_vel_;         ///< Subscriber for velocity
     ros::Subscriber sub_laser_scan_;  ///< Subscriber for laser scan
     ros::Subscriber sub_game_ended_;  ///< Subscriber for crash detection

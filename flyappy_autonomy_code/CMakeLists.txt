@@ -13,7 +13,10 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  nav_msgs
 )
+
+find_package(Eigen3 REQUIRED)
 
 catkin_package()
 
