@@ -4,6 +4,7 @@ constexpr uint32_t QUEUE_SIZE = 5u;
 
 FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
     : pub_acc_cmd_(nh.advertise<geometry_msgs::Vector3>("/flyappy_acc", QUEUE_SIZE)),
+      pub_position_(nh.advertise<geometry_msgs::Vector3>("/flyappy_pos", QUEUE_SIZE)),
       pub_map_(nh.advertise<nav_msgs::OccupancyGrid>("/flyappy_map", QUEUE_SIZE)),
       sub_vel_(nh.subscribe("/flyappy_vel", QUEUE_SIZE, &FlyappyRos::velocityCallback,
                             this)),
@@ -19,22 +20,52 @@ FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
 
     // initializing constant map information
     map_.initialized = false;
-    map_.height = flyappy_.height_pixel_size;
-    map_.width = flyappy_.width_pixel_size;
     map_.resolution = 1;
-    map_.occupancy_matrix = -Eigen::Matrix<int, flyappy_.height_pixel_size, flyappy_.width_pixel_size>::Ones();
+    map_.origin[0] = 0;
+    map_.origin[0] = 0;
+
+    // path planning initializing
+    path_.goal_pos[0] = laser_data_.range_max+1;
+    path_.goal_pos[1] = 0;
+    path_.prev_pos_error[0] = 0;
+    path_.prev_pos_error[1] = 0;
+
+    // PID initializing
+    pid_.kp[0] = 0; // kp for x
+    pid_.kp[1] = 20;
+    pid_.kd[0] = 0.0;
+    pid_.kd[1] = 150;
 }
 
 void FlyappyRos::velocityCallback(const geometry_msgs::Vector3::ConstPtr& msg)
 {
-    flyappy_.set_velocity(msg->x, msg->y);
+    flyappy_.set_velocity(msg->x, -msg->y);
     flyappy_.set_position(flyappy_.get_velocity()[0] * flyappy_.periode, flyappy_.get_velocity()[1] * flyappy_.periode);
+
+    // publish position
+    geometry_msgs::Vector3 pos;
+    pos.x = flyappy_.get_position()[0];
+    pos.y = flyappy_.get_position()[1];
+    pub_position_.publish(pos);
+    
+    ROS_INFO_STREAM("velocity" << flyappy_.get_velocity()[0]);
+    // updating time steps variable
+    ++flyappy_.num_time_steps_;
 }
 
 void FlyappyRos::laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
 {
     updateLaserData(msg);
     updateMapData();
+    
+    geometry_msgs::Vector3 acc_cmd;
+    // flyappy_.pid_control_testing();
+    flyappy_.fuzzy_control();
+    // flyappy_.pid_control_x();
+    acc_cmd.x = flyappy_.get_acceleration()[0];
+    // ROS_INFO_STREAM(acc_cmd.x << " y:" << acc_cmd.y);
+    acc_cmd.y = flyappy_.get_acceleration()[1];
+    pub_acc_cmd_.publish(acc_cmd);
 }
 
 void FlyappyRos::gameEndedCallback(const std_msgs::Bool::ConstPtr& msg)
@@ -49,6 +80,28 @@ void FlyappyRos::gameEndedCallback(const std_msgs::Bool::ConstPtr& msg)
     }
 
     flyappy_ = {};
+    // initialize state
+    flyappy_.set_acceleration(0, 0);
+    flyappy_.set_velocity(0, 0);
+    flyappy_.set_initial_position(0, 0);
+
+    // initializing constant map information
+    map_.initialized = false;
+    map_.resolution = 1;
+    map_.origin[0] = 0;
+    map_.origin[0] = 0;
+
+    // path planning initializing
+    path_.goal_pos[0] = laser_data_.range_max+1;
+    path_.goal_pos[1] = 0;
+    path_.prev_pos_error[0] = 0;
+    path_.prev_pos_error[1] = 0;
+
+    // PID initializing
+    pid_.kp[0] = 0; // kp for x
+    pid_.kp[1] = 20; // kp for y
+    pid_.kd[0] = 0.0; // kd for x
+    pid_.kd[1] = 200; // kd for y
 }
 
 /*****Data Processing Functions*****/
@@ -83,6 +136,8 @@ void FlyappyRos::updateLaserData(const sensor_msgs::LaserScan::ConstPtr& msg)
             laser_data_.index_range_min_current = i;
         }
     }
+
+    // ROS_INFO_STREAM("laser distance: " << laser_data_.ranges[4]);
 }
 
 void FlyappyRos::updateMapData()
@@ -92,24 +147,26 @@ void FlyappyRos::updateMapData()
     // setting origin & locate bird on map
     if (!map_.initialized)
     {
-        // map_.origin[0] = laser_data_.range_min_current * std::sin((laser_data_.index_range_min_current - 4) * laser_data_.angle_increment);
-        // map_.origin[1] = int(map_.height / 2);
-        map_.origin[0] = 0;
-        map_.origin[0] = 0;
+        float top_to_bird_distance_y = std::abs(laser_data_.ranges[8] * std::sin(4 * laser_data_.angle_increment)); // top laser ray: 4 = 8 - 4; 9 = index and 4 = middle number
+        float bottom_to_bird_distance_y = std::abs(laser_data_.ranges[0] * std::sin(-4 * laser_data_.angle_increment));
+        ROS_INFO_STREAM("Top: " << top_to_bird_distance_y);
+        ROS_INFO_STREAM("Bottom: " << bottom_to_bird_distance_y);
+        
+        if (top_to_bird_distance_y == laser_data_.range_max)
+
         // locate bird on map
-        flyappy_.set_initial_position(0.0, map_.height * flyappy_.meters_per_grid_box + laser_data_.range_min_current * std::sin((laser_data_.index_range_min_current - 4) * laser_data_.angle_increment));
-        ROS_INFO_STREAM("pos: " << flyappy_.get_position());
-        ROS_INFO_STREAM("min: " << laser_data_.range_min_current);
-        ROS_INFO_STREAM("index: " << laser_data_.index_range_min_current);
-        ROS_INFO_STREAM("angle: " << (laser_data_.index_range_min_current - 4) * laser_data_.angle_increment);
-        // // setting all values in map with -1 = unkown
-        // for (size_t i = 0; i < map_.height; ++i)
-        // {
-        //     for (size_t j = 0; j < map_.width; ++j)
-        //     {
-        //         map_.occupancy_matrix[i, j] = -1;
-        //     }
-        // }
+        flyappy_.set_initial_position(0.0, top_to_bird_distance_y);
+
+        // define map size
+        // map_.height = (top_to_bird_distance_y + bottom_to_bird_distance_y) / 0.01;
+        // ROS_INFO_STREAM("height: " << map_.height);
+        // map_.width = 400; // 400 pixels are equivalent to 4 meters which is enough for the obstacle detection
+        // map_.occupancy_matrix = -Eigen::Matrix<int, Eigen::Dynamic, Eigen::Dynamic>::Ones(map_.width, map_.height);
+        // ROS_INFO_STREAM("pos: " << flyappy_.get_position());
+        // ROS_INFO_STREAM("min: " << laser_data_.range_min_current);
+        // ROS_INFO_STREAM("index: " << laser_data_.index_range_min_current);
+        // ROS_INFO_STREAM("angle: " << (laser_data_.index_range_min_current - 4) * laser_data_.angle_increment);
+
         map_.initialized = true;
     }
     
@@ -118,27 +175,32 @@ void FlyappyRos::updateMapData()
         if (laser_data_.ranges[i] < laser_data_.range_max)
         {
             float pos_x = laser_data_.ranges[i] * std::cos((i - 4) * laser_data_.angle_increment);
-            float pos_y = laser_data_.ranges[i] * std::sin((i - 4) * laser_data_.angle_increment);
+            float pos_y = -laser_data_.ranges[i] * std::sin((i - 4) * laser_data_.angle_increment);
 
             // conversion to grid coordinates
-            int grid_x = int((flyappy_.get_position()[0] + pos_x) / flyappy_.meters_per_grid_box);
-            int grid_y = int((flyappy_.get_position()[1] + pos_y) / flyappy_.meters_per_grid_box);
+            int grid_x = (flyappy_.get_position()[0] + pos_x) / flyappy_.meters_per_grid_box;
+            int grid_y = (flyappy_.get_position()[1] + pos_y) / flyappy_.meters_per_grid_box;
             
-            ROS_INFO_STREAM("Grid_x: " << grid_x << "Grid_y: " << grid_y);
-            // assign a one to the location (grid_x, grid_y) = 1
-            map_.occupancy_matrix(grid_x, grid_y) = 1;
-        } else 
+            // assign a 100 to the location (grid_x, grid_y) to indicate obstacles
+            // ROS_INFO("HELLO1");
+            // ROS_INFO_STREAM("Grid_x: " << grid_x << "Grid_y: " << grid_y);
+            // map_.occupancy_matrix(grid_x, grid_y) = 100;
+            // ROS_INFO("HELLO2");
+        } 
+        else 
         {
             float pos_x = laser_data_.ranges[i] * std::cos((i - 4) * laser_data_.angle_increment);
-            float pos_y = laser_data_.ranges[i] * std::sin((i - 4) * laser_data_.angle_increment);
+            float pos_y = -laser_data_.ranges[i] * std::sin((i - 4) * laser_data_.angle_increment);
 
             // conversion to grid coordinates
-            int grid_x = int((flyappy_.get_position()[0] + pos_x) / flyappy_.meters_per_grid_box);
-            int grid_y = int((flyappy_.get_position()[1] + pos_y) / flyappy_.meters_per_grid_box);
+            int grid_x = (flyappy_.get_position()[0] + pos_x) / flyappy_.meters_per_grid_box;
+            int grid_y = (flyappy_.get_position()[1] + pos_y) / flyappy_.meters_per_grid_box;
 
-            // assign a zero to the location (grid_x, grid_y) = 0
-            ROS_INFO_STREAM("Grid_x: " << grid_x << "Grid_y: " << grid_y);
-            map_.occupancy_matrix(grid_x, grid_y) = 0;
+            // assign a zero to the location (grid_x, grid_y) to indicate free space
+            // ROS_INFO("HELLO3");
+            // ROS_INFO_STREAM("Grid_x: " << grid_x << "Grid_y: " << grid_y);
+            // map_.occupancy_matrix(grid_x, grid_y) = 0;
+            // ROS_INFO("HELLO4");
         }
     }
 
@@ -155,13 +217,13 @@ void FlyappyRos::updateMapData()
     grid_message.info.origin.orientation.z = 0;
     grid_message.info.map_load_time = ros::Time::now();
 
-    for (size_t i = 0; i < map_.height; ++i)
-    {
-        for (size_t j = 0; j < map_.width; ++j)
-        {
-            grid_message.data.push_back(map_.occupancy_matrix(i, j));
-        }
-    }
+    // for (size_t i = 0; i < map_.height; ++i)
+    // {
+    //     for (size_t j = 0; j < map_.width; ++j)
+    //     {
+    //         grid_message.data.push_back(map_.occupancy_matrix(i, j));
+    //     }
+    // }
 
     // pubish map
     pub_map_.publish(grid_message);
