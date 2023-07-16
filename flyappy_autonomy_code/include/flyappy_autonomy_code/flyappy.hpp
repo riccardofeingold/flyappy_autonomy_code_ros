@@ -24,34 +24,24 @@ struct LaserScanData
   std::array<float, 9> intensities; // not needed
 };
 
-LaserScanData laser_data_;
-
 struct Map
 {
-  bool initialized;
   float resolution;
-  int width;
-  int height;
-  Eigen::Vector2d origin; // TODO: setting the origin_x to where the bird is and y is in the middle of the frame
-  Eigen::MatrixXi occupancy_matrix;
+  float first_wall_max_x;
+  float first_wall_min_x;
+  std::vector<float> first_wall;
+  std::vector<float> second_wall;
 };
-
-Map map_;
-
-struct Wall
-{
-  bool initialized;
-  Eigen::VectorXd wall;
-};
-
-Wall wall_;
 
 struct Path
 {
+  bool upper_bound_set = false;
+  bool lower_bound_set = false;
+  float upper_bound = 0;
+  float lower_bound = 0;
   Eigen::Vector2d goal_pos;
   Eigen::Vector2d prev_pos_error;
 };
-Path path_;
 
 struct PID
 {
@@ -59,7 +49,13 @@ struct PID
   Eigen::Vector2d ki;
   Eigen::Vector2d kd;
 };
-PID pid_;
+
+enum States
+{
+  init,
+  move_forward,
+  wall_memory_reset
+};
 
 class FuzzyMembershipFunctions
 {
@@ -94,8 +90,6 @@ class FuzzyMembershipFunctions
       if (this->membership_name_ == "trimf")
       {
         float width = std::abs(this->parameters_[0] - this->parameters_[2]);
-        std::cout << "width " << width << std::endl;
-        std::cout << "area " << width*height*(1 - (float)height/2) << std::endl;
         return width*height*(1 - (float)height/2);
       }
       else
@@ -170,8 +164,9 @@ class Flyappy
     void set_initial_position(float px, float py);
 
     // high level control
-    void path_planning();
+    void find_target_y();
     void fuzzy_control();
+    void find_upper_lower_boundary();
     void pid_control_x();
     void pid_control_y();
 
@@ -191,6 +186,14 @@ class Flyappy
     static constexpr int width_pixel_size = 432;
     static constexpr int height_pixel_size = 512;
     static constexpr float vel_limit_x = 2;
+    static constexpr float safety_margin = 0.3;
+    
+    // struct instances
+    States states_;
+    Map map_;
+    Path path_;
+    PID pid_;
+    LaserScanData laser_data_;
 
   private:
     Eigen::Vector2d acceleration_; // in meters/s²
@@ -198,7 +201,7 @@ class Flyappy
     Eigen::Vector2d position_; // in meters
 
     // fuzzification membership functions
-    FuzzyMembershipFunctions mfc_near_ = FuzzyMembershipFunctions(std::string("zmf"), std::vector<float>({0.3, 0.7}));
+    FuzzyMembershipFunctions mfc_near_ = FuzzyMembershipFunctions(std::string("zmf"), std::vector<float>({0.4, 0.7}));
     FuzzyMembershipFunctions mfc_closing_ = FuzzyMembershipFunctions(std::string("trapmf"), std::vector<float>({0.5, 0.7, 1.0, 1.5}));
     FuzzyMembershipFunctions mfc_far_ = FuzzyMembershipFunctions(std::string("smf"), std::vector<float>({1, 2.5}));
     FuzzyMembershipFunctions vel_very_slow_ = FuzzyMembershipFunctions(std::string("zmf"), std::vector<float>({vel_limit_x/12, vel_limit_x/9}));
@@ -213,4 +216,6 @@ class Flyappy
     FuzzyMembershipFunctions slow_acc_ = FuzzyMembershipFunctions(std::string("trimf"), std::vector<float>({0, acc_limit_x/6, acc_limit_x/3}));
     FuzzyMembershipFunctions med_acc_ = FuzzyMembershipFunctions(std::string("trimf"), std::vector<float>({0, acc_limit_x/2, acc_limit_x}));
     FuzzyMembershipFunctions fast_acc_ = FuzzyMembershipFunctions(std::string("trimf"), std::vector<float>({acc_limit_x/2, acc_limit_x, 3*acc_limit_x/2}));
+    FuzzyMembershipFunctions go_up_ = FuzzyMembershipFunctions(std::string("trimf"), std::vector<float>({0, acc_limit_y, 2*acc_limit_y}));
+    FuzzyMembershipFunctions go_down_ = FuzzyMembershipFunctions(std::string("trimf"), std::vector<float>({-2*acc_limit_y, acc_limit_y, 0}));
 };

@@ -20,8 +20,7 @@ class FlyappyRos
     void laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg);
     void gameEndedCallback(const std_msgs::Bool::ConstPtr& msg);
     void updateLaserData(const sensor_msgs::LaserScan::ConstPtr& msg);
-    void updateMapData();
-    // void sendAccCommand();
+    void wallDataUpdate();
 
     ros::Publisher pub_acc_cmd_;      ///< Publisher for acceleration command
     ros::Publisher pub_position_;     ///< Publisher for position to visualize it in rqt_plot
