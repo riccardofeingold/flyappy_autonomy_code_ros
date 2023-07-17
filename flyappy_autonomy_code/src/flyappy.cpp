@@ -117,45 +117,90 @@ void Flyappy::fuzzy_control()
         this->acceleration_[0] = 0;
 }
 
-// TODO: set a gap width e.g. 1m; reset wall information as soon as the agent is at the goal height
-// TODO: use a dynamic vector to store the collision points
 void Flyappy::find_target_y()
 {
 
-        // std::array<float, 9> x_distance;
-        // std::array<float, 9> y_distance;
-        // for (size_t i = 0; i < x_distance.size(); ++i)
-        // {
-        //     x_distance[i] = laser_data_.ranges[i]*std::cos((i - 4)*laser_data_.angle_increment);
-        //     y_distance[i] = laser_data_.ranges[i]*std::sin((i - 4)*laser_data_.angle_increment);
-        //     if (laser_data_.ranges[i] < 3.55)
-        //         wall_[(int)(x_distance.size()/2 + y_distance[i] + this->position_[1])/0.01] = 1;
-        //     else
-        //         wall_[(int)(x_distance.size()/2 + y_distance[i] + this->position_[1])/0.01] = 0;
-        // }
-        
-        // int zero_counter = 0;
-        // float biggest_gap = 0;
-        // float middle_y_position_of_gap = 0;
-        // int start_index = 0;
-        // int stop_index = 0;
-        // for (size_t i = 0; i < wall_.size(); ++i)
-        // {
-        //     if (wall_[i] == 1)
-        //     {
-        //         if (zero_counter*0.01 > biggest_gap)
-        //         {
-        //             biggest_gap = zero_counter*0.01;
-        //             middle_y_position_of_gap = (float)(2*i - zero_counter)/2*0.01;
-        //         }
-        //         zero_counter = 0;
-        //     }
-        //     else if (wall_[i] == 0)
-        //         ++zero_counter;
-        // }
+    if (states_ == transition)
+        return;
+    else if (states_ == move_forward)
+    {
+        int optimal_gate_height = gate_height/(path_.lower_bound - path_.upper_bound) * map_.resolution;
 
-        // std::cout << middle_y_position_of_gap << std::endl;
-        // path_.goal_pos[1] = middle_y_position_of_gap;
+        std::vector<int8_t> first_wall_copy = map_.first_wall;
+        first_wall_copy.insert(first_wall_copy.begin(), 100);
+        first_wall_copy.push_back(100);
+        std::vector<int> signs(first_wall_copy.size());
+        std::vector<int> zero_starts;
+        std::vector<int> zero_stops;
+        // difference: out[i] = vec[i+1] - vec[i]
+        for (size_t i = 0; i < first_wall_copy.size(); ++i)
+        {
+            if (i < first_wall_copy.size() - 1)
+            {
+                signs[i] = first_wall_copy[i+1] - first_wall_copy[i];
+                if (signs[i] == -100)
+                    zero_starts.push_back(i);
+                else if (signs[i] == 100)
+                    zero_stops.push_back(i);
+            }
+        }
+
+        std::vector<int> zero_count(zero_starts.size());
+        for (size_t i = 0; i < zero_count.size(); ++i)
+        {
+            zero_count[i] = zero_stops[i] - zero_starts[i];
+        }
+
+        std::vector<int> zero_selection(zero_count.size());
+        std::vector<int> zero_selection_index;
+        int biggest_gap = 0;
+        for (size_t i = 0; i < zero_count.size(); ++i)
+        {
+            zero_selection[i] = zero_count[i] - optimal_gate_height;
+            if (zero_selection[i] < 0.1*optimal_gate_height && zero_selection[i] > 0)
+                zero_selection_index.push_back(i);
+        }
+        if (zero_selection_index.size() == 1)
+        {
+            std::cout << "only one" << std::endl;
+            float middle = (float)(zero_starts[zero_selection_index[0]] + zero_stops[zero_selection_index[0]])/2;
+            path_.goal_pos[1] = (float)middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+        } else if (zero_selection_index.size() > 1)
+        {
+            std::cout << "choose closest" << std::endl;
+            std::vector<float> goals;
+            float min = 999;
+            for (size_t i = 0; i < zero_selection_index.size(); ++i)
+            {
+                float middle = (float)(zero_starts[zero_selection_index[i]] + zero_stops[zero_selection_index[i]])/2;
+                float goal = (float)middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+                goals.push_back(goal);
+            }
+            for (size_t i = 0; i < goals.size(); ++i)
+            {
+                if (std::abs(goals[i] - this->position_[1]) < min)
+                {
+                    min = std::abs(goals[i] - this->position_[1]);
+                    path_.goal_pos[1] = goals[i];
+                }
+            }
+        }else
+        {
+            std::cout << "explore" << std::endl;
+            int max_count = 0;
+            int max_count_index = 0;
+            for (size_t i = 0; i < zero_count.size(); ++i)
+            {
+                if (zero_count[i] > max_count)
+                {
+                    max_count = zero_count[i];
+                    max_count_index = i;
+                }
+            }
+            float middle = (float)(zero_starts[max_count_index] + zero_stops[max_count_index])/2;
+            path_.goal_pos[1] = middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+        }
+    }
 }
 
 void Flyappy::find_upper_lower_boundary()

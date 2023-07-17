@@ -26,11 +26,16 @@ struct LaserScanData
 
 struct Map
 {
+  bool front_obstacle_update;
   float resolution;
   float first_wall_max_x;
   float first_wall_min_x;
-  std::vector<float> first_wall;
-  std::vector<float> second_wall;
+  float second_wall_max_x;
+  float second_wall_min_x;
+  float front_obstacle_max_x;
+  float front_obstacle_min_x;
+  std::vector<int8_t> first_wall;
+  std::vector<int8_t> second_wall;
 };
 
 struct Path
@@ -53,8 +58,9 @@ struct PID
 enum States
 {
   init,
-  move_forward,
-  wall_memory_reset
+  move_to_start,
+  transition,
+  move_forward
 };
 
 class FuzzyMembershipFunctions
@@ -186,10 +192,13 @@ class Flyappy
     static constexpr int width_pixel_size = 432;
     static constexpr int height_pixel_size = 512;
     static constexpr float vel_limit_x = 2;
-    static constexpr float safety_margin = 0.3;
+    static constexpr float safety_margin = 0.75;
+    static constexpr float wall_width = 0.6;
+    static constexpr float gate_height = 0.5;
     
     // struct instances
     States states_;
+    States prev_states_;
     Map map_;
     Path path_;
     PID pid_;
