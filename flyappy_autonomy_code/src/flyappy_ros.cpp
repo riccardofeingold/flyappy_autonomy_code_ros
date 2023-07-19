@@ -1,8 +1,11 @@
 #include "flyappy_autonomy_code/flyappy_ros.hpp"
 
 constexpr uint32_t QUEUE_SIZE = 5u;
+constexpr int MAP_RESOLUTION = 300;
+constexpr float LASER_RANGE_MAX = 3.54;
 constexpr float FRONT_MARGIN = 0.2;
 constexpr float BACK_MARGIN = 0.15;
+
 FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
     : pub_acc_cmd_(nh.advertise<geometry_msgs::Vector3>("/flyappy_acc", QUEUE_SIZE)),
       pub_position_(nh.advertise<geometry_msgs::Vector3>("/flyappy_pos", QUEUE_SIZE)),
@@ -20,7 +23,7 @@ FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
     flyappy_.set_initial_position(0, 0);
 
     // initializing constant map information
-    flyappy_.map_.resolution = 300;
+    flyappy_.map_.resolution = MAP_RESOLUTION;
     flyappy_.map_.first_wall = std::vector<int8_t>(flyappy_.map_.resolution, 0);
     flyappy_.map_.second_wall = std::vector<int8_t>(flyappy_.map_.resolution, 0);
     flyappy_.map_.first_wall_max_x = 0;
@@ -45,7 +48,6 @@ FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
 
     // initialize state
     flyappy_.states_ = init;
-    flyappy_.prev_states_ = init;
 }
 
 void FlyappyRos::velocityCallback(const geometry_msgs::Vector3::ConstPtr& msg)
@@ -68,53 +70,92 @@ void FlyappyRos::laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
     updateLaserData(msg);
     wallDataUpdate();
 
+    switch (flyappy_.states_)
+    {
+        case 0:
+            std::cout << "Current state: init" << std::endl;
+            break;
+        case 1:
+            std::cout << "Current state: transition" << std::endl;
+            break;
+        case 2: 
+            std::cout << "Current state: move_forward" << std::endl;
+            break;
+        case 3:
+            std::cout << "Current state: search_gap" << std::endl;
+            break;
+        case 4:
+            std::cout << "Current state: explore" << std::endl;
+            break;
+        case 5:
+            std::cout << "Current state: gap_found" << std::endl;
+            break;
+    }
+
     if (flyappy_.map_.front_obstacle_update)
     {
         flyappy_.map_.front_obstacle_max_x = flyappy_.map_.first_wall_max_x + FRONT_MARGIN;
         flyappy_.map_.front_obstacle_min_x = flyappy_.map_.first_wall_min_x - BACK_MARGIN;
     }
+
     if (flyappy_.map_.first_wall_min_x == 999)
     {
-        flyappy_.prev_states_ = flyappy_.states_;
         flyappy_.states_ = init;
     }
     else if (flyappy_.get_position()[0] < flyappy_.map_.front_obstacle_min_x)
     {
-        flyappy_.prev_states_ = flyappy_.states_;
         flyappy_.states_ = move_forward;
     }
     else if (flyappy_.get_position()[0] >= flyappy_.map_.front_obstacle_min_x && flyappy_.get_position()[0] <= flyappy_.map_.front_obstacle_max_x && flyappy_.map_.front_obstacle_update == true)
     {
-        flyappy_.prev_states_ = flyappy_.states_;
         flyappy_.states_ = transition;
     }
     else if (flyappy_.get_position()[0] >= flyappy_.map_.front_obstacle_min_x && flyappy_.get_position()[0] <= flyappy_.map_.front_obstacle_max_x && flyappy_.map_.front_obstacle_update == false)
     {
-        flyappy_.prev_states_ = flyappy_.states_;
-        flyappy_.states_ = move_forward;
+        flyappy_.states_ = search_gap;
     }
     else if (flyappy_.get_position()[0] > flyappy_.map_.front_obstacle_max_x)
     {
         flyappy_.map_.front_obstacle_update = true;
-        flyappy_.prev_states_ = flyappy_.states_;
         flyappy_.states_ = move_forward;
         flyappy_.map_.front_obstacle_max_x = flyappy_.map_.first_wall_max_x + FRONT_MARGIN;
         flyappy_.map_.front_obstacle_min_x = flyappy_.map_.first_wall_min_x - BACK_MARGIN;
     }
 
-    if (flyappy_.states_ == move_forward or flyappy_.states_ == transition)
+    // if (std::abs(flyappy_.get_velocity()[0]) < flyappy_.vel_limit_x/10 && flyappy_.states_ == transition)
+    // {
+    //     std::cout << "HELLO" << std::endl;
+    //     flyappy_.states_ = explore;
+    // }
+
+    if (flyappy_.states_ == move_forward || flyappy_.states_ == transition || flyappy_.states_ == search_gap)
     {
-        flyappy_.fuzzy_control();
         flyappy_.find_target_y();
         flyappy_.pid_control_y();
+        flyappy_.fuzzy_control();
     }
+    // else if (flyappy_.states_ == explore)
+    // {
+    //     flyappy_.find_target_y();
+    //     flyappy_.pid_control_y();
+    //     if (flyappy_.laser_data_.ranges[3] > 1.5 && flyappy_.laser_data_.ranges[4] > 1.5 && flyappy_.laser_data_.ranges[5] > 1.5)
+    //         flyappy_.states_ = move_forward;
+    // }
     else if (flyappy_.states_ == init)
     {
-        flyappy_.find_upper_lower_boundary();
-        if (flyappy_.path_.lower_bound_set && flyappy_.path_.upper_bound_set)
+        if (flyappy_.path_.lower_bound_set && flyappy_.path_.upper_bound_set && flyappy_.map_.first_wall_min_x != 999)
         {
-            flyappy_.prev_states_ = flyappy_.states_;
             flyappy_.states_ = move_forward;
+        }else
+        {
+            if (flyappy_.path_.lower_bound_set && flyappy_.path_.upper_bound_set)
+            {
+                flyappy_.pid_control_y();
+                flyappy_.fuzzy_control();
+            } else 
+            {
+                flyappy_.find_upper_lower_boundary();
+            }
         }
     }
     // send command    
@@ -142,7 +183,7 @@ void FlyappyRos::gameEndedCallback(const std_msgs::Bool::ConstPtr& msg)
     flyappy_.set_initial_position(0, 0);
 
     // initializing constant map information
-    flyappy_.map_.resolution = 300;
+    flyappy_.map_.resolution = MAP_RESOLUTION;
     flyappy_.map_.first_wall = std::vector<int8_t>(flyappy_.map_.resolution, 0);
     flyappy_.map_.second_wall = std::vector<int8_t>(flyappy_.map_.resolution, 0);
     flyappy_.map_.first_wall_max_x = 0;
@@ -168,7 +209,11 @@ void FlyappyRos::gameEndedCallback(const std_msgs::Bool::ConstPtr& msg)
 
     // states
     flyappy_.states_ = init;
-    flyappy_.prev_states_ = init;
+
+    // reseting time
+    flyappy_.num_time_steps_ = 0;
+    flyappy_.reset_happend_at = 0;
+    flyappy_.reset_counter_ = 0;
 }
 
 /*****Data Processing Functions*****/
@@ -180,11 +225,11 @@ void FlyappyRos::updateLaserData(const sensor_msgs::LaserScan::ConstPtr& msg)
     flyappy_.laser_data_.scan_time = msg->scan_time;
     flyappy_.laser_data_.time_increment = msg->time_increment;
     flyappy_.laser_data_.range_min = msg->range_min;
-    flyappy_.laser_data_.range_max = msg->range_max;
+    flyappy_.laser_data_.range_max = LASER_RANGE_MAX;
 
     flyappy_.laser_data_.range_max_current = 0; // initial value
     flyappy_.laser_data_.range_min_current = flyappy_.laser_data_.range_max + 1; // initial value
-    for (size_t i = 0; i < msg->ranges.size(); ++i)
+    for (unsigned int i = 0; i < msg->ranges.size(); ++i)
     {
         flyappy_.laser_data_.ranges[i] = msg->ranges[i];
         flyappy_.laser_data_.intensities[i] = msg->intensities[i];
@@ -205,24 +250,25 @@ void FlyappyRos::updateLaserData(const sensor_msgs::LaserScan::ConstPtr& msg)
     }
 }
 
-// TODO: Find out why there are some obstacles detected on the map although there is free space. 
-//       This is probably the reason why the whole program is not working. Being not able to map
-//       the data correctly results into wrong gap detection => which in the end leads to the explore mode.
+
 void FlyappyRos::wallDataUpdate()
 {
     std::vector<float> x_dist_temp;
     std::vector<int> y_index_obstacles;
 
-    for (size_t i = 0; i < flyappy_.laser_data_.ranges.size(); ++i)
+    for (unsigned int i = 0; i < flyappy_.laser_data_.ranges.size(); ++i)
     {
-        float x = flyappy_.get_position()[0] + flyappy_.laser_data_.ranges[i]*std::cos((i - 4)*flyappy_.laser_data_.angle_increment);
-        float y = flyappy_.get_position()[1] - flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment);
-
-        if (y < flyappy_.path_.lower_bound && y > flyappy_.path_.upper_bound)
+        if (flyappy_.laser_data_.ranges[i] < flyappy_.laser_data_.range_max)
         {
-            x_dist_temp.push_back(x);
-            int y_index = (y - flyappy_.path_.upper_bound) / (flyappy_.path_.lower_bound - flyappy_.path_.upper_bound) * flyappy_.map_.resolution; // index = 0 => at top
-            y_index_obstacles.push_back(y_index);
+            float x = flyappy_.get_position()[0] + flyappy_.laser_data_.ranges[i]*std::cos((i - 4)*flyappy_.laser_data_.angle_increment);
+            float y = flyappy_.get_position()[1] - flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment);
+            if (y < flyappy_.path_.lower_bound && y > flyappy_.path_.upper_bound)
+            {
+                // std::cout << "angle increment: " << flyappy_.laser_data_.angle_increment << "range: " << flyappy_.laser_data_.ranges[i] << " y pos: " << flyappy_.get_position()[1] << " y_component: " << flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " sin(alpha): " << std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " y" << i << ": " << y << " lower bound: " << flyappy_.path_.lower_bound << " upper bound: " << flyappy_.path_.upper_bound << std::endl;
+                x_dist_temp.push_back(x);
+                int y_index = (y - flyappy_.path_.upper_bound) / (flyappy_.path_.lower_bound - flyappy_.path_.upper_bound) * flyappy_.map_.resolution; // index = 0 => at top
+                y_index_obstacles.push_back(y_index);
+            }
         }
     }
 
@@ -230,15 +276,19 @@ void FlyappyRos::wallDataUpdate()
     {
         float x_range = *std::max_element(x_dist_temp.begin(), x_dist_temp.end()) - *std::min_element(x_dist_temp.begin(), x_dist_temp.end());
 
+        // std::cout << "x range: " << x_range << " pos x: " << flyappy_.get_position()[0] << " pos y: " << flyappy_.get_position()[1] << " goal y: " << flyappy_.path_.goal_pos[1] << " min_x: " << *std::min_element(x_dist_temp.begin(), x_dist_temp.end()) << " 2nd wall min x: " << flyappy_.map_.second_wall_min_x << std::endl;
         if (x_range < flyappy_.wall_width)
         {
             if (*std::min_element(x_dist_temp.begin(), x_dist_temp.end()) > flyappy_.map_.second_wall_min_x - 0.2)
             {
+                flyappy_.reset_happend_at = flyappy_.num_time_steps_;
+
                 flyappy_.map_.first_wall = flyappy_.map_.second_wall;
                 flyappy_.map_.first_wall_max_x = flyappy_.map_.second_wall_max_x;
                 flyappy_.map_.first_wall_min_x = flyappy_.map_.second_wall_min_x;
                 flyappy_.map_.front_obstacle_update = false;
-                
+                ++flyappy_.reset_counter_;
+                std::cout << "RESET" << flyappy_.reset_counter_ << std::endl;
                 // reseting second wall
                 flyappy_.map_.second_wall = std::vector<int8_t>(flyappy_.map_.resolution, 0);
                 flyappy_.map_.second_wall_max_x = 0;

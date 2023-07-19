@@ -42,7 +42,7 @@ class FlyappyRos:
         # Example of printing laser angle and range
         rospy.loginfo_throttle(
             1,
-            f"Laser range: {msg.ranges[0]}, angle: {msg.angle_min}"
+            f"Laser range: {msg.ranges[0]}, {msg.ranges[8]}, angle: {msg.angle_min}"
         )
 
     def game_ended_callback(self, msg: Bool) -> None:

@@ -58,17 +58,17 @@ void Flyappy::pid_control_y()
 void Flyappy::fuzzy_control()
 {
     // weighting of front lasers
-    float w_upper_middle_laser = 0.333;
-    float w_middle_laser = 0.333;
-    float w_lower_middle_laser = 0.333;
+    float w_upper_middle_laser = 0.2;
+    float w_middle_laser = 0.6;
+    float w_lower_middle_laser = 0.2;
 
     // fuzzyfication
     std::array<std::array<float, 3>, 9> fuzzy_laser_distances;
     for (size_t i = 0; i < fuzzy_laser_distances.size(); ++i)
     {
-        fuzzy_laser_distances[i][0] = this->mfc_closing_.mfc(laser_data_.ranges[i]*std::cos((i - 4)*laser_data_.angle_increment));
-        fuzzy_laser_distances[i][1] = this->mfc_near_.mfc(laser_data_.ranges[i]*std::cos((i - 4)*laser_data_.angle_increment));
-        fuzzy_laser_distances[i][2] = this->mfc_far_.mfc(laser_data_.ranges[i]*std::cos((i - 4)*laser_data_.angle_increment));
+        fuzzy_laser_distances[i][0] = this->mfc_closing_.mfc(laser_data_.ranges[i]);
+        fuzzy_laser_distances[i][1] = this->mfc_near_.mfc(laser_data_.ranges[i]);
+        fuzzy_laser_distances[i][2] = this->mfc_far_.mfc(laser_data_.ranges[i]);
     }
 
     //// weighted average
@@ -76,7 +76,7 @@ void Flyappy::fuzzy_control()
     fuzzy_laser_variables[0] = fuzzy_laser_distances[3][0]*w_lower_middle_laser + fuzzy_laser_distances[4][0]*w_middle_laser + fuzzy_laser_distances[5][0]*w_upper_middle_laser;
     fuzzy_laser_variables[1] = fuzzy_laser_distances[3][1]*w_lower_middle_laser + fuzzy_laser_distances[4][1]*w_middle_laser + fuzzy_laser_distances[5][1]*w_upper_middle_laser;
     fuzzy_laser_variables[2] = fuzzy_laser_distances[3][2]*w_lower_middle_laser + fuzzy_laser_distances[4][2]*w_middle_laser + fuzzy_laser_distances[5][2]*w_upper_middle_laser;
-    
+
     //// fuzzify velocity measurment
     std::array<float, 4> fuzzy_vel_x_variables; // [0, 1, 2, 3] = [very slow, slow, medium, fast]
     fuzzy_vel_x_variables[0] = this->vel_very_slow_.mfc(this->velocity_[0]);
@@ -91,7 +91,9 @@ void Flyappy::fuzzy_control()
     output_fuzzy_variables[0] = std::max(std::min(std::max({std::min(fuzzy_laser_variables[2], fuzzy_laser_variables[1]), fuzzy_laser_variables[1], std::min(fuzzy_laser_variables[1], fuzzy_laser_variables[0])}), 1 - fuzzy_vel_x_variables[0]), fuzzy_laser_variables[0]);
     //// 2. Rule: If far && (very slow or slow or medium) then fast accelerating
     output_fuzzy_variables[5] = std::min({fuzzy_laser_variables[2], std::max({fuzzy_vel_x_variables[0], fuzzy_vel_x_variables[1], fuzzy_vel_x_variables[2]})});
-    
+    //// 3. Rule: If far && closing && (very slow || slow) then medium accelerating.
+    output_fuzzy_variables[4] = std::min({fuzzy_laser_variables[2], fuzzy_laser_variables[1], std::max(fuzzy_vel_x_variables[0], fuzzy_vel_x_variables[1])});
+
     // defuzzification
     std::array<float, 6> areas;// [0,1,2,3,4,5] = [fast breaking, medium breaking, slow breaking, stop acc, slow acc, fast acc]
     areas[0] = (float)this->fast_breaking_.area_mfc(output_fuzzy_variables[0])/2;
@@ -119,12 +121,13 @@ void Flyappy::fuzzy_control()
 
 void Flyappy::find_target_y()
 {
-
+    float goal = 0.0;
     if (states_ == transition)
         return;
-    else if (states_ == move_forward)
+    else if (states_ == move_forward || states_ == search_gap || states_ == explore)
     {
         int optimal_gate_height = gate_height/(path_.lower_bound - path_.upper_bound) * map_.resolution;
+        int flyappy_height = flyappy_size_height/(path_.lower_bound - path_.upper_bound) * map_.resolution;
 
         std::vector<int8_t> first_wall_copy = map_.first_wall;
         first_wall_copy.insert(first_wall_copy.begin(), 100);
@@ -132,8 +135,9 @@ void Flyappy::find_target_y()
         std::vector<int> signs(first_wall_copy.size());
         std::vector<int> zero_starts;
         std::vector<int> zero_stops;
+
         // difference: out[i] = vec[i+1] - vec[i]
-        for (size_t i = 0; i < first_wall_copy.size(); ++i)
+        for (unsigned int i = 0; i < first_wall_copy.size(); ++i)
         {
             if (i < first_wall_copy.size() - 1)
             {
@@ -144,7 +148,7 @@ void Flyappy::find_target_y()
                     zero_stops.push_back(i);
             }
         }
-
+        
         std::vector<int> zero_count(zero_starts.size());
         for (size_t i = 0; i < zero_count.size(); ++i)
         {
@@ -154,7 +158,7 @@ void Flyappy::find_target_y()
         std::vector<int> zero_selection(zero_count.size());
         std::vector<int> zero_selection_index;
         int biggest_gap = 0;
-        for (size_t i = 0; i < zero_count.size(); ++i)
+        for (unsigned int i = 0; i < zero_count.size(); ++i)
         {
             zero_selection[i] = zero_count[i] - optimal_gate_height;
             if (zero_selection[i] < 0.1*optimal_gate_height && zero_selection[i] > 0)
@@ -163,17 +167,39 @@ void Flyappy::find_target_y()
         if (zero_selection_index.size() == 1)
         {
             std::cout << "only one" << std::endl;
-            float middle = (float)(zero_starts[zero_selection_index[0]] + zero_stops[zero_selection_index[0]])/2;
-            path_.goal_pos[1] = (float)middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+            // states_ = gap_found;
+            int middle = (zero_starts[zero_selection_index[0]] + zero_stops[zero_selection_index[0]])/2;
+            int y_target_pixel = 0;
+            if (zero_count[zero_selection_index[0]] - flyappy_height > zero_stops[zero_selection_index[0]] - middle)
+            {
+                std::cout << "11" << std::endl;
+                y_target_pixel = zero_starts[zero_selection_index[0]] + flyappy_height;
+            } else
+            {
+                std::cout << "12" << std::endl;
+                y_target_pixel = middle;
+            }
+            goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
         } else if (zero_selection_index.size() > 1)
         {
             std::cout << "choose closest" << std::endl;
             std::vector<float> goals;
+
             float min = 999;
             for (size_t i = 0; i < zero_selection_index.size(); ++i)
             {
-                float middle = (float)(zero_starts[zero_selection_index[i]] + zero_stops[zero_selection_index[i]])/2;
-                float goal = (float)middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+                int middle = (zero_starts[zero_selection_index[i]] + zero_stops[zero_selection_index[i]])/2;
+                int y_target_pixel = 0;
+                if (zero_count[zero_selection_index[i]] - flyappy_height > zero_stops[zero_selection_index[i]] - middle)
+                {
+                    std::cout << "21" << std::endl;
+                    y_target_pixel = zero_starts[zero_selection_index[i]] + flyappy_height;
+                } else
+                {
+                    std::cout << "22" << std::endl;
+                    y_target_pixel = middle;
+                }
+                float goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
                 goals.push_back(goal);
             }
             for (size_t i = 0; i < goals.size(); ++i)
@@ -181,25 +207,30 @@ void Flyappy::find_target_y()
                 if (std::abs(goals[i] - this->position_[1]) < min)
                 {
                     min = std::abs(goals[i] - this->position_[1]);
-                    path_.goal_pos[1] = goals[i];
+                    goal = goals[i];
                 }
             }
         }else
         {
             std::cout << "explore" << std::endl;
-            int max_count = 0;
-            int max_count_index = 0;
-            for (size_t i = 0; i < zero_count.size(); ++i)
+
+            int max_count_index = std::distance(zero_count.begin(), std::max_element(zero_count.begin(), zero_count.end()));
+            int middle = (zero_starts[max_count_index] + zero_stops[max_count_index])/2;
+            int y_target_pixel = 0;
+            if (zero_count[max_count_index] - flyappy_height > zero_stops[max_count_index] - middle)
             {
-                if (zero_count[i] > max_count)
-                {
-                    max_count = zero_count[i];
-                    max_count_index = i;
-                }
+                std::cout << "31" << std::endl;
+                y_target_pixel = zero_starts[max_count_index] + flyappy_height;
+            } else
+            {
+                std::cout << "32" << std::endl;
+                y_target_pixel = middle;
             }
-            float middle = (float)(zero_starts[max_count_index] + zero_stops[max_count_index])/2;
-            path_.goal_pos[1] = middle / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+            goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
         }
+
+        if (states_ == move_forward)
+            path_.goal_pos[1] = goal;
     }
 }
 

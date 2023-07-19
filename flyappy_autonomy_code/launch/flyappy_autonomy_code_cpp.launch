@@ -4,4 +4,5 @@
   <node name="flyappy_autonomy_code" pkg="flyappy_autonomy_code" type="flyappy_autonomy_code_node" output="screen" />
   <node name="flyappy_main_game" pkg="flyappy_main_game" type="flyappy.py" output="screen" required="true" />
   <node type="rviz" name="rviz" pkg="rviz" args="-d $(find flyappy_autonomy_code)/rviz/config_file.rviz" />
+  <node type="plotjuggler" name="plotjuggler" pkg="plotjuggler" args="-l $(find flyappy_autonomy_code)/plotjuggler/config_file.xml" />
 </launch>

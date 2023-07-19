@@ -58,9 +58,11 @@ struct PID
 enum States
 {
   init,
-  move_to_start,
   transition,
-  move_forward
+  move_forward,
+  search_gap,
+  explore,
+  gap_found
 };
 
 class FuzzyMembershipFunctions
@@ -181,6 +183,8 @@ class Flyappy
     
     // Global variables
     int num_time_steps_ = 0;
+    int reset_happend_at = 0;
+    int reset_counter_ = 0;
 
     // global constant variables we should be 
     // initiliazed at compile time
@@ -195,14 +199,15 @@ class Flyappy
     static constexpr float safety_margin = 0.75;
     static constexpr float wall_width = 0.6;
     static constexpr float gate_height = 0.5;
+    static constexpr float flyappy_size_height = 24*0.01;
     
     // struct instances
     States states_;
-    States prev_states_;
     Map map_;
     Path path_;
     PID pid_;
     LaserScanData laser_data_;
+
 
   private:
     Eigen::Vector2d acceleration_; // in meters/s²
