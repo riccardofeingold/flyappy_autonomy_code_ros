@@ -43,7 +43,7 @@ Eigen::Vector2d Flyappy::get_position()
 
 void Flyappy::pid_control_x()
 {
-    float current_error = path_.goal_pos[0] - laser_data_.ranges[4];
+    float current_error = path_.goal_pos[0] - (float)(laser_data_.ranges[3] + laser_data_.ranges[4] + laser_data_.ranges[5])/3;
     this->acceleration_[0] = pid_.kp[0] * current_error + pid_.kd[0] * (current_error - path_.prev_pos_error[0]);  
     path_.prev_pos_error[0] = current_error;
 }
@@ -58,9 +58,9 @@ void Flyappy::pid_control_y()
 void Flyappy::fuzzy_control()
 {
     // weighting of front lasers
-    float w_upper_middle_laser = 0.2;
-    float w_middle_laser = 0.6;
-    float w_lower_middle_laser = 0.2;
+    float w_upper_middle_laser = 0.333;
+    float w_middle_laser = 0.333;
+    float w_lower_middle_laser = 0.333;
 
     // fuzzyfication
     std::array<std::array<float, 3>, 9> fuzzy_laser_distances;
@@ -90,10 +90,9 @@ void Flyappy::fuzzy_control()
     //// 1. Rule: If (((far && closing) or closing or (closing && near)) && not very slow) or near then fast breaking
     output_fuzzy_variables[0] = std::max(std::min(std::max({std::min(fuzzy_laser_variables[2], fuzzy_laser_variables[1]), fuzzy_laser_variables[1], std::min(fuzzy_laser_variables[1], fuzzy_laser_variables[0])}), 1 - fuzzy_vel_x_variables[0]), fuzzy_laser_variables[0]);
     //// 2. Rule: If far && (very slow or slow or medium) then fast accelerating
-    output_fuzzy_variables[5] = std::min({fuzzy_laser_variables[2], std::max({fuzzy_vel_x_variables[0], fuzzy_vel_x_variables[1], fuzzy_vel_x_variables[2]})});
-    //// 3. Rule: If far && closing && (very slow || slow) then medium accelerating.
-    // output_fuzzy_variables[4] = std::min({fuzzy_laser_variables[2], fuzzy_laser_variables[1], std::max(fuzzy_vel_x_variables[0], fuzzy_vel_x_variables[1])});
-
+    output_fuzzy_variables[3] = std::min({fuzzy_laser_variables[2], std::max({fuzzy_vel_x_variables[0], fuzzy_vel_x_variables[1], fuzzy_vel_x_variables[2]})});
+    //// 3. Rule: If vel very slow && middle laser is far or far && closing then medium accelerating.
+    output_fuzzy_variables[4] = std::min(fuzzy_vel_x_variables[0], std::max(fuzzy_laser_distances[4][2], std::min(fuzzy_laser_distances[4][2], fuzzy_laser_distances[4][1])));
     // defuzzification
     std::array<float, 6> areas;// [0,1,2,3,4,5] = [fast breaking, medium breaking, slow breaking, stop acc, slow acc, fast acc]
     areas[0] = (float)this->fast_breaking_.area_mfc(output_fuzzy_variables[0])/2;
@@ -160,19 +159,19 @@ void Flyappy::find_target_y()
     if (zero_selection_index.size() == 1)
     {
         std::cout << "only one" << std::endl;
-        // states_ = gap_found;
         int middle = (zero_starts[zero_selection_index[0]] + zero_stops[zero_selection_index[0]])/2;
         int y_target_pixel = 0;
         if (zero_count[zero_selection_index[0]] - flyappy_height > zero_stops[zero_selection_index[0]] - middle)
-        {
-            std::cout << "11" << std::endl;
             y_target_pixel = zero_starts[zero_selection_index[0]] + flyappy_height;
-        } else
-        {
-            std::cout << "12" << std::endl;
+        else
             y_target_pixel = middle;
-        }
+
         goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
+        if (states_ == transition && !explored)
+        {
+            if (zero_count[zero_selection_index[0]] > gate_height)
+                path_.goal_pos[1] = goal;
+        }
     } else if (zero_selection_index.size() > 1)
     {
         std::cout << "choose closest" << std::endl;
@@ -184,14 +183,10 @@ void Flyappy::find_target_y()
             int middle = (zero_starts[zero_selection_index[i]] + zero_stops[zero_selection_index[i]])/2;
             int y_target_pixel = 0;
             if (zero_count[zero_selection_index[i]] - flyappy_height > zero_stops[zero_selection_index[i]] - middle)
-            {
-                std::cout << "21" << std::endl;
                 y_target_pixel = zero_starts[zero_selection_index[i]] + flyappy_height;
-            } else
-            {
-                std::cout << "22" << std::endl;
+            else
                 y_target_pixel = middle;
-            }
+
             float goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
             goals.push_back(goal);
         }
@@ -208,32 +203,68 @@ void Flyappy::find_target_y()
         std::cout << "explore" << std::endl;
 
         int max_count_index = std::distance(zero_count.begin(), std::max_element(zero_count.begin(), zero_count.end()));
-        std::cout << "max_count: " << zero_count[max_count_index] << std::endl;
         int middle = (zero_starts[max_count_index] + zero_stops[max_count_index])/2;
         int y_target_pixel = 0;
         if (zero_count[max_count_index] - flyappy_height > zero_stops[max_count_index] - middle)
-        {
-            std::cout << "31" << std::endl;
             y_target_pixel = zero_starts[max_count_index] + flyappy_height;
-        } else
-        {
-            std::cout << "32" << std::endl;
+        else
             y_target_pixel = middle;
-        }
+    
         goal = (float)y_target_pixel / map_.resolution * (path_.lower_bound - path_.upper_bound) + path_.upper_bound;
         
-        if (states_ == transition)
+        if (states_ == transition && !explored)
         {
             if (zero_count[max_count_index] > gate_height)
-            {
                 path_.goal_pos[1] = goal;
-                std::cout << "YES!" << std::endl;
-            }
         }
     }
 
     if (states_ == move_forward)
         path_.goal_pos[1] = goal;
+}
+
+void Flyappy::up_down_exploration()
+{
+    std::cout << "EXPLORING" << std::endl;
+    float upper_position = path_.upper_bound;
+    float lower_position = path_.lower_bound;
+
+    find_target_y();
+    if (!explore_top_)
+    {
+        if (laser_data_.ranges[3] > range_threshold && laser_data_.ranges[4] > range_threshold && laser_data_.ranges[5] > range_threshold)
+        {
+            path_.goal_pos[1] = position_[1];
+            explore_top_ = true;
+            explore_bottom_ = true;
+        } else 
+        {
+            path_.goal_pos[1] = upper_position;
+            if (std::abs(position_[1] - upper_position) < 0.05)
+                explore_top_ = true;
+        }
+    } else
+    {
+        if (!explore_bottom_)
+        {
+            if (laser_data_.ranges[3] > range_threshold && laser_data_.ranges[4] > range_threshold && laser_data_.ranges[5] > range_threshold)
+            {
+                path_.goal_pos[1] = position_[1];
+                explore_bottom_ = true;
+            } else 
+            {
+                path_.goal_pos[1] = lower_position;
+                if (std::abs(position_[1] - lower_position) < 0.05)
+                    explore_bottom_ = true;
+            }
+        }
+    }
+    if (explore_top_ && explore_bottom_)
+    {
+        states_ = transition;
+        explored = true;
+        stuck_counter_ = 0;
+    }
 }
 
 void Flyappy::find_upper_lower_boundary()

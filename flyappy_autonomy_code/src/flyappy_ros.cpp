@@ -1,10 +1,14 @@
 #include "flyappy_autonomy_code/flyappy_ros.hpp"
 
+#define DEBUG false
+
 constexpr uint32_t QUEUE_SIZE = 5u;
-constexpr int MAP_RESOLUTION = 300;
+constexpr int MAP_RESOLUTION = 512;
 constexpr float LASER_RANGE_MAX = 3.54;
 constexpr float FRONT_MARGIN = 0.2;
 constexpr float BACK_MARGIN = 0.15;
+constexpr float KPY = 60;
+constexpr float KDY = 1000;
 
 FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
     : pub_acc_cmd_(nh.advertise<geometry_msgs::Vector3>("/flyappy_acc", QUEUE_SIZE)),
@@ -35,16 +39,16 @@ FlyappyRos::FlyappyRos(ros::NodeHandle& nh)
     flyappy_.map_.front_obstacle_update = true;
 
     // path planning initializing
-    flyappy_.path_.goal_pos[0] = 0;
+    flyappy_.path_.goal_pos[0] = 0.5;
     flyappy_.path_.goal_pos[1] = 0;
     flyappy_.path_.prev_pos_error[0] = 0;
     flyappy_.path_.prev_pos_error[1] = 0;
 
     // PID initializing
     flyappy_.pid_.kp[0] = 0; // kp for x
-    flyappy_.pid_.kp[1] = 60;
+    flyappy_.pid_.kp[1] = KPY;
     flyappy_.pid_.kd[0] = 0.0;
-    flyappy_.pid_.kd[1] = 1000;
+    flyappy_.pid_.kd[1] = KDY;
 
     // initialize state
     flyappy_.states_ = init;
@@ -70,6 +74,7 @@ void FlyappyRos::laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
     updateLaserData(msg);
     wallDataUpdate();
 
+    #if debug
     switch (flyappy_.states_)
     {
         case 0:
@@ -91,11 +96,18 @@ void FlyappyRos::laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
             std::cout << "Current state: gap_found" << std::endl;
             break;
     }
+    std::cout << "explored: " << flyappy_.explored << " " << flyappy_.stuck_counter_ << std::endl;
+    #endif
 
     if (flyappy_.map_.front_obstacle_update)
     {
         flyappy_.map_.front_obstacle_max_x = flyappy_.map_.first_wall_max_x + FRONT_MARGIN;
         flyappy_.map_.front_obstacle_min_x = flyappy_.map_.first_wall_min_x - BACK_MARGIN;
+    }
+
+    if (flyappy_.explored && flyappy_.get_velocity()[0] < flyappy_.vel_limit_x/12)
+    {
+        flyappy_.explored = false;
     }
 
     if (flyappy_.map_.first_wall_min_x == 999)
@@ -117,30 +129,44 @@ void FlyappyRos::laserScanCallback(const sensor_msgs::LaserScan::ConstPtr& msg)
     else if (flyappy_.get_position()[0] > flyappy_.map_.front_obstacle_max_x)
     {
         flyappy_.map_.front_obstacle_update = true;
+        flyappy_.explored = false;
+        flyappy_.explore_top_ = false;
+        flyappy_.explore_bottom_ = false;
         flyappy_.states_ = move_forward;
         flyappy_.map_.front_obstacle_max_x = flyappy_.map_.first_wall_max_x + FRONT_MARGIN;
         flyappy_.map_.front_obstacle_min_x = flyappy_.map_.first_wall_min_x - BACK_MARGIN;
     }
 
-    // if (std::abs(flyappy_.get_velocity()[0]) < flyappy_.vel_limit_x/10 && flyappy_.states_ == transition)
-    // {
-    //     std::cout << "HELLO" << std::endl;
-    //     flyappy_.states_ = explore;
-    // }
-
     if (flyappy_.states_ == move_forward || flyappy_.states_ == transition || flyappy_.states_ == search_gap)
     {
-        flyappy_.find_target_y();
-        flyappy_.pid_control_y();
-        flyappy_.fuzzy_control();
+        if (flyappy_.get_velocity()[0] < flyappy_.vel_limit_x/12 && (flyappy_.states_ == transition || flyappy_.states_ == search_gap) && !flyappy_.explored)
+        {
+            ++flyappy_.stuck_counter_;
+            if (flyappy_.stuck_counter_ > 60)
+            {
+                flyappy_.up_down_exploration();
+                flyappy_.pid_control_y();
+            } else
+            {
+                flyappy_.find_target_y();
+                flyappy_.pid_control_y();
+                flyappy_.fuzzy_control();
+            }
+        } else
+        {
+            if (flyappy_.stuck_counter_ > 0 && flyappy_.stuck_counter_ < 60)
+            {
+                flyappy_.pid_control_y();
+                flyappy_.set_acceleration(-3, flyappy_.get_acceleration()[1]);
+            }
+            else 
+            {
+                flyappy_.find_target_y();
+                flyappy_.pid_control_y();
+                flyappy_.fuzzy_control();
+            }
+        }
     }
-    // else if (flyappy_.states_ == explore)
-    // {
-    //     flyappy_.find_target_y();
-    //     flyappy_.pid_control_y();
-    //     if (flyappy_.laser_data_.ranges[3] > 1.5 && flyappy_.laser_data_.ranges[4] > 1.5 && flyappy_.laser_data_.ranges[5] > 1.5)
-    //         flyappy_.states_ = move_forward;
-    // }
     else if (flyappy_.states_ == init)
     {
         if (flyappy_.path_.lower_bound_set && flyappy_.path_.upper_bound_set && flyappy_.map_.first_wall_min_x != 999)
@@ -196,23 +222,22 @@ void FlyappyRos::gameEndedCallback(const std_msgs::Bool::ConstPtr& msg)
 
 
     // path planning initializing
-    flyappy_.path_.goal_pos[0] = 0;
+    flyappy_.path_.goal_pos[0] = 0.5;
     flyappy_.path_.goal_pos[1] = 0;
     flyappy_.path_.prev_pos_error[0] = 0;
     flyappy_.path_.prev_pos_error[1] = 0;
 
     // PID initializing
     flyappy_.pid_.kp[0] = 0; // kp for x
-    flyappy_.pid_.kp[1] = 60; // kp for y
+    flyappy_.pid_.kp[1] = KPY; // kp for y
     flyappy_.pid_.kd[0] = 0.0; // kd for x
-    flyappy_.pid_.kd[1] = 1000; // kd for y
+    flyappy_.pid_.kd[1] = KDY; // kd for y
 
     // states
     flyappy_.states_ = init;
-
+    flyappy_.explored = false;
     // reseting time
     flyappy_.num_time_steps_ = 0;
-    flyappy_.reset_happend_at = 0;
     flyappy_.reset_counter_ = 0;
 }
 
@@ -264,7 +289,9 @@ void FlyappyRos::wallDataUpdate()
             float y = flyappy_.get_position()[1] - flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment);
             if (y < flyappy_.path_.lower_bound && y > flyappy_.path_.upper_bound)
             {
-                // std::cout << "angle increment: " << flyappy_.laser_data_.angle_increment << "range: " << flyappy_.laser_data_.ranges[i] << " y pos: " << flyappy_.get_position()[1] << " y_component: " << flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " sin(alpha): " << std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " y" << i << ": " << y << " lower bound: " << flyappy_.path_.lower_bound << " upper bound: " << flyappy_.path_.upper_bound << std::endl;
+                #if debug
+                std::cout << "angle increment: " << flyappy_.laser_data_.angle_increment << "range: " << flyappy_.laser_data_.ranges[i] << " y pos: " << flyappy_.get_position()[1] << " y_component: " << flyappy_.laser_data_.ranges[i]*std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " sin(alpha): " << std::sin((i - 4)*flyappy_.laser_data_.angle_increment) << " y" << i << ": " << y << " lower bound: " << flyappy_.path_.lower_bound << " upper bound: " << flyappy_.path_.upper_bound << std::endl;
+                #endif
                 x_dist_temp.push_back(x);
                 int y_index = (y - flyappy_.path_.upper_bound) / (flyappy_.path_.lower_bound - flyappy_.path_.upper_bound) * flyappy_.map_.resolution; // index = 0 => at top
                 y_index_obstacles.push_back(y_index);
@@ -276,13 +303,13 @@ void FlyappyRos::wallDataUpdate()
     {
         float x_range = *std::max_element(x_dist_temp.begin(), x_dist_temp.end()) - *std::min_element(x_dist_temp.begin(), x_dist_temp.end());
 
-        // std::cout << "x range: " << x_range << " pos x: " << flyappy_.get_position()[0] << " pos y: " << flyappy_.get_position()[1] << " goal y: " << flyappy_.path_.goal_pos[1] << " min_x: " << *std::min_element(x_dist_temp.begin(), x_dist_temp.end()) << " 2nd wall min x: " << flyappy_.map_.second_wall_min_x << std::endl;
+        #if debug
+        std::cout << "x range: " << x_range << " pos x: " << flyappy_.get_position()[0] << " pos y: " << flyappy_.get_position()[1] << " goal y: " << flyappy_.path_.goal_pos[1] << " min_x: " << *std::min_element(x_dist_temp.begin(), x_dist_temp.end()) << " 2nd wall min x: " << flyappy_.map_.second_wall_min_x << std::endl;
+        #endif
         if (x_range < flyappy_.wall_width)
         {
             if (*std::min_element(x_dist_temp.begin(), x_dist_temp.end()) > flyappy_.map_.second_wall_min_x - 0.2)
             {
-                flyappy_.reset_happend_at = flyappy_.num_time_steps_;
-
                 flyappy_.map_.first_wall = flyappy_.map_.second_wall;
                 flyappy_.map_.first_wall_max_x = flyappy_.map_.second_wall_max_x;
                 flyappy_.map_.first_wall_min_x = flyappy_.map_.second_wall_min_x;

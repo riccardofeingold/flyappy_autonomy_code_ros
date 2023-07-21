@@ -175,6 +175,7 @@ class Flyappy
     void find_target_y();
     void fuzzy_control();
     void find_upper_lower_boundary();
+    void up_down_exploration();
     void pid_control_x();
     void pid_control_y();
 
@@ -183,8 +184,11 @@ class Flyappy
     
     // Global variables
     int num_time_steps_ = 0;
-    int reset_happend_at = 0;
     int reset_counter_ = 0;
+    int stuck_counter_ = 0;
+    bool explored = false;
+    bool explore_top_ = false;
+    bool explore_bottom_ = false;
 
     // global constant variables we should be 
     // initiliazed at compile time
@@ -200,6 +204,7 @@ class Flyappy
     static constexpr float wall_width = 0.6;
     static constexpr float gate_height = 0.5;
     static constexpr float flyappy_size_height = 24*0.01;
+    static constexpr float range_threshold = 1.7;
     
     // struct instances
     States states_;
@@ -210,6 +215,7 @@ class Flyappy
 
 
   private:
+
     Eigen::Vector2d acceleration_; // in meters/s²
     Eigen::Vector2d velocity_; // in meters/s
     Eigen::Vector2d position_; // in meters
